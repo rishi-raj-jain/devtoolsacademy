@@ -34,26 +34,17 @@ Here's an example highlighting where chunking and retrieval fall short:
 
 ```python
 document = """
-
 Step 1: Remove the battery. It may be hot.
-
 Step 2: Discharge all capacitors. This protects you.
-
 """
-
 chunks = split_into_chunks(document, chunk_size=1)  # This splits each step
-
 embeddings = [embed(chunk) for chunk in chunks]     # Each chunk loses connection to others
 
 query = "Why should I remove the battery first?"
-
 results = vector_search(query, embeddings)
-
 # Fails here: The model retrieves "Remove the battery. It may be hot."
-
 # But has lost "Discharge all capacitors. This protects you." and loses the reason tied across steps.
-
-# The pronoun 'this' in "This protects you" is ambiguous outside the original context.
+# Pronoun 'this' in "This protects you" is ambiguous outside the original context.
 ```
 
 Chunking fails during both the splitting and retrieval steps:
