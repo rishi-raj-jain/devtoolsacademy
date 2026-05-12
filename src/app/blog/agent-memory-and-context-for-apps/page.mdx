@@ -1,0 +1,155 @@
+export const metadata = getMetadata({
+  path: "/blog/agent-memory-and-context-for-apps",
+  title: "Agent memory and context for apps",
+  description: "Understanding Context, Retrieval, and Why “Memory” Is Not Just RAG for Agentic Apps",
+})
+
+<BlogHeader
+  title={"Agent memory and context for apps"}
+  author={"Rishi Raj Jain"}
+  publishedAt={"2026-05-12T00:00:00Z"}
+/>
+
+# Agent memory and context for apps
+
+Building user-facing agents quickly exposes the challenge of repeated user preferences and agent forgetfulness. Appending more conversation history only increases latency and token usage while still leaving the agent prone to forgetting and contradiction.
+
+It's tempting to think a vector database will solve the problem, but in practice, it rarely does. The issue goes beyond retrieval, most failures in production are failures of continuity. Users don't just want the right excerpt from a document, but they expect the system to remember who they are and what has happened previously.
+
+This article explores that continuity. It clarifies what "context" truly means for an agent, why naive RAG chunking falls short, and what contextual retrieval can and cannot solve. It also explains how memory systems are applied in practice, and provides a technically grounded comparison of [Mem0](https://mem0.ai/) and [Supermemory](https://supermemory.ai/).
+
+## A practical model of context
+
+Context in agents is not a single thing but a series of overlapping layers, each with its own characteristics and vulnerabilities. Local context appears within a single turn and includes the immediate user input and any outputs generated in that exchange. This form of context is fleeting, serving as a temporary scratchpad for a single step rather than a lasting record. Session context, on the other hand, spans multiple turns in a conversation. It encompasses the task's active state, the constraints and preferences collected during the exchange, emerging plans, and any work in progress. While still temporary, session context creates a short narrative thread running through the interaction.
+
+Long-term user context, often described as memory, contains the enduring preferences, identity details, goals that persist across time, and noteworthy decisions from past interactions. This layer must persist beyond a page refresh and be scoped carefully to both the individual user and the product they are interacting with. The simplest way to distinguish true memory from context is to consider whether a piece of information needs to survive a page reload. If it does, it qualifies as memory rather than mere context.
+
+## Why naive chunking fails and why memory is different
+
+Standard RAG approaches break content into discrete chunks, embed each chunk, and try to match queries to the most relevant ones. This process assumes content is cleanly separable, but real documents have overlapping ideas and dependencies. When documents written for humans are divided for machines, important context is lost. Pronouns become ambiguous, steps in procedures get separated, and information anchored to time or earlier statements is stripped of its meaning. Even attempting to overlap chunks or make them larger often just spreads the confusion, making searches less focused.
+
+Here's an example highlighting where chunking and retrieval fall short:
+
+| document \= """Step 1: Remove the battery. It may be hot.Step 2: Discharge all capacitors. This protects you."""chunks \= split\_into\_chunks(document, chunk\_size=1)  \# This splits each stepembeddings \= \[embed(chunk) for chunk in chunks\]     \# Each chunk loses connection to othersquery \= "Why should I remove the battery first?"results \= vector\_search(query, embeddings)\# Fails here: The model retrieves "Remove the battery. It may be hot."\# But has lost "Discharge all capacitors. This protects you." and loses the reason tied across steps.\# The pronoun 'this' in "This protects you" is ambiguous outside the original context. |
+| :---- |
+
+Chunking fails during both the splitting and retrieval steps:
+
+- During split\_into\_chunks, causal or referential links (e.g., "this protects you") are broken.  
+- During vector\_search, the returned chunk may lack the grounding or explanation found in adjacent chunks, leading to ambiguous or incomplete answers.
+
+Memory addresses a different problem. Instead of raw text chunks, memory stores facts, user preferences, goals, and results, typically in a format that pairs data with the appropriate metadata. This design allows the system to scope, update, expire, and trace the origin of information. Memory is not simply about pulling relevant content but about maintaining and evolving what is stored. That maintenance includes merging new details, compressing to avoid overload, and even overriding outdated facts. Many realize only in production that raw vector search is not enough and that continuity requires a memory system built for change.
+
+## Contextual retrieval for document knowledge
+
+Contextual retrieval works by summarizing what a document chunk is about, situating it within its surrounding context, and combining this overview with the chunk itself before embedding. This approach makes each embedding expressive for both the local content and its place in the broader document. By doing so, it overcomes a range of retrieval failures where isolated fragments make it difficult for systems to recover necessary details, such as who or what a statement applies to, the timing, or the circumstances that give the text meaning. Anthropic describes this approach in its write-up on [contextual retrieval](https://anthropic.com/engineering/contextual-retrieval), including the pattern of generating chunk-specific context and then combining lexical retrieval, vector retrieval, and reranking to achieve stronger results.
+
+The following pseudocode demonstrates enriching document chunks with contextual summaries before embedding, enabling more coherent retrieval.
+
+| for each chunk in the document  context\_summary \= summarize chunk using the surrounding section and the document outline  enriched\_text \= context\_summary plus chunk  vector \= embed enriched\_text  store vector with metadata such as document id and section location |
+| :---- |
+
+Hybrid search strengthens contextual retrieval by pairing keyword matching for precision with vector retrieval for understanding meaning. A reranking step then sorts results so the best matches surface first, and it is often described as a two stage retrieval pattern where a fast retriever supplies candidates and a slower model reorders them for relevance. If you want a succinct explanation of the tradeoffs, this overview of [reranking](https://engineersofai.com/docs/llms/rag-systems/Reranking) is a helpful technical reference.
+
+My view is that contextual retrieval is table stakes for RAG, but memory systems need additional primitives such as identity, conflict resolution, and scoping. Contextual retrieval can help a memory system retrieve document like knowledge more reliably, but it does not define who a memory belongs to, how long it should live, or what to do when two memories disagree.
+
+The following pseudocode demonstrates a hybrid retrieval process and its integration into a memory system.
+
+| function hybrid\_search query  keyword\_results \= keyword\_search query over corpus  vector\_results \= vector\_search query over embedded corpus  combined \= merge keyword\_results and vector\_results  ranked \= rerank combined against query  return rankedfunction memory\_retrieval query user\_id current\_task  candidates \= hybrid\_search query  identity\_facts \= retrieve identity facts for user\_id  memories \= filter candidates by scope using user\_id and current\_task  resolve conflicts using recency and explicit overrides  return memories |
+| :---- |
+
+## From retrieval to identity maintenance
+
+Most teams start by asking how to retrieve the right context, but the harder question is what context is worth keeping. A practical way to think about memory is identity maintenance, meaning a small set of durable facts and preferences that should be easy to retrieve and hard to corrupt. In a product agent, this often looks like dietary preferences, formatting preferences, accessibility needs, time zone, or a standing constraint such as not suggesting paid tools. A simple example is the kind of user preference shown in the quickstart on [Mem0](https://mem0.ai/), where the system stores a preference and then retrieves it later in a scoped way rather than dragging the full chat history everywhere.
+
+| \# source: https://docs.mem0.ai/open-source/python-quickstart\#installationfrom mem0 import MemoryClientclient \= MemoryClient(api\_key="your-api-key")\# Add a memorymessages \= \[    {"role": "user", "content": "I'm a vegetarian and allergic to nuts."},    {"role": "assistant", "content": "Got it\! I'll remember your dietary preferences."}\]client.add(messages, user\_id="user123")\# Search memoriesresults \= client.search("What are my dietary restrictions?", filters={"user\_id": "user123"})print(results) |
+| :---- |
+
+Most apps should store far less than they think, only what changes future decisions. That means you treat goals as semi stable objects you update carefully, treat episodic history as something you distil into outcomes, and treat procedural preferences as instructions that reduce rework. Contextual retrieval can still matter here when you are retrieving documents like knowledge, but memory has additional responsibilities that go beyond document fragments. In practice, you still need scoping, conflict resolution, and an audit trail so you can explain why a preference was applied, which is also why broader context platforms, such as [Supermemory](https://supermemory.ai/), that emphasize multiple layers like profiles, retrieval, and a graph rather than a single store and search step.
+
+| \# source: https://supermemory.ai/docs/user-profiles\#quick-startfrom supermemory import Supermemoryclient \= Supermemory()result \= client.profile(container\_tag="user\_123")\# Retrieve user profileprint(result.profile.static)   \# Long-term factsprint(result.profile.dynamic)  \# Recent context |
+| :---- |
+
+## A checklist for memory you can operate
+
+The key advantage is not to collect more information, but to focus on keeping the most relevant and accurate memories. Think of memory as a small, well-structured database that contains decisions, preferences, and facts that meaningfully impact future behavior. Treat the raw conversation as an input from which you distil significant details, rather than archiving every message.
+
+When writing new memories, it is helpful to capture only high-value information and include sufficient metadata. Recording details such as the memory's subject, the time it was observed, and its origin enables efficient scoping and auditing later. For example, you might extract a user’s stated preference from a conversation and store it as a structured memory, instead of saving the entire message history.
+
+| messages \= \[  {"role": "user", "content": "I am a vegetarian and I prefer short bullet lists"},  {"role": "assistant", "content": "Understood, I will keep that in mind"}\]memory\_client.add(  messages,  user\_id="user\_123",  metadata={    "source": "chat",    "kind": "preference",    "confidence": 0.9  }) |
+| :---- |
+
+Reading from memory requires careful filtering. Always begin by applying scope to avoid any risk of cross-user or cross-agent leakage. Hybrid retrieval works well when you need to combine structured facts with broader document knowledge. Establish sensible thresholds so the system acknowledges when it lacks sufficient information, rather than fabricating context that was never captured.
+
+| memories \= memory\_client.search(  "How should I format the answer",  filters={    "user\_id": "user\_123",    "kind": "preference"  })if not memories or memories\[0\]\["score"\] \< 0.65:  return "I do not have enough saved context to be confident" |
+| :---- |
+
+Efficient use of memory depends on compression and summarization. If old messages accumulate without being distilled into concise records, memory soon becomes unwieldy and expensive to use. A robust implementation will summarize recent conversation history into durable, compact updates that retain key decisions or preferences while discarding day-to-day chatter.
+
+| history \= load\_recent\_messages(user\_id="user\_123", limit=200)compressed \= summarize\_to\_durable\_memories(history)memory\_client.add(  \[{"role": "system", "content": compressed}\],  user\_id="user\_123",  metadata={"source": "compression", "kind": "summary"}) |
+| :---- |
+
+Of course, you must expect preferences and facts to change over time. Memory systems should actively support updates, merging, and explicit overrides, rather than only appending new entries. This allows the system to reflect each user's evolving reality.
+
+| memory\_client.add(  \[{"role": "user", "content": "Update, I am no longer vegetarian"}\],  user\_id="user\_123",  metadata={"source": "chat", "kind": "override"})conflicts \= memory\_client.search("dietary preference", filters={"user\_id": "user\_123"})resolved \= resolve\_with\_recency\_and\_overrides(conflicts) |
+| :---- |
+
+If you want a more systematic way to validate this in engineering terms, Mem0 published a guide on [testing agent memory](https://mem0.ai/blog/how-to-test-ai-agent-memory-with-mem0-a-practical-memory-simulation-guide) that outlines a simulation style approach for measuring stale facts and contradictions over longer trajectories.
+
+## Comparing Mem0 and Supermemory for Agent Memory
+
+Both [Mem0](https://mem0.ai/) and [Supermemory](https://supermemory.ai/) aim to give agents continuity across sessions, but the differentiation that matters is both technical and operational. In practice, you are choosing between a memory layer (Mem0) that emphasizes entity scoped storage and retrieval controls, and a broader context platform (Supermemory) that bundles ingestion, extraction, profiles, and unified search across memories and documents. That choice affects privacy boundaries, cost profiles, and the amount of context plumbing your team must maintain.
+
+Mem0 is best understood as a memory layer you integrate into an application, where the core primitive is a memory record and the core guardrail is strict scoping. It emphasizes on filters and entity scoped memory as the mechanism that keeps tenant data separated and keeps debugging tractable. Supermemory is best understood as memory plus context infrastructure, with core primitives including documents, extracted memories, and a profile summary that you can inject into prompts.
+
+Let's examine four key product surfaces where Mem0 and Supermemory differ in their approach and usage:
+
+1. Mem0 makes [entity scoping](https://docs.mem0.ai/platform/features/entity-scoped-memory) and retrieval composition explicit through filters, which is useful for multi-tenant products where separation and auditability matter, and it is also a practical business requirement for privacy and compliance.
+
+| from mem0 import MemoryClientclient \= MemoryClient(api\_key="m0-...")messages \= \[  {"role": "user", "content": "I prefer boutique hotels and avoid shellfish"},  {"role": "assistant", "content": "Saved your travel preferences"}\]\# Store scoped memoriesclient.add(  messages,  user\_id="customer\_6412",  agent\_id="travel\_planner",  app\_id="concierge\_portal",  run\_id="itinerary-2025-apr")\# Retrieve by user scopeuser\_scope \= {  "AND": \[    {"user\_id": "customer\_6412"},    {"app\_id": "concierge\_portal"},    {"run\_id": "itinerary-2025-apr"}  \]}\# Retrieve by agent scoperesults \= client.search("Any dietary flags", filters=user\_scope) |
+| :---- |
+
+For example, this is helpful for a SaaS platform serving multiple businesses, as it ensures that each company's data is isolated. This way, a travel planner agent accessing a user’s preferences for one client cannot accidentally retrieve another company's information.
+
+2. Mem0 also exposes [multimodal ingestion](https://docs.mem0.ai/platform/features/multimodal-support) as a first class capability, which can be valuable when your product needs to learn from images or documents that users already share.
+
+| from mem0 import MemoryClientclient \= MemoryClient(api\_key="m0-...")messages \= \[  {"role": "user", "content": "Here is what I ate today"},  {    "role": "user",    "content": {      "type": "image\_url",      "image\_url": {        "url": "https://www.superhealthykids.com/wp-content/uploads/2021/10/best-veggie-pizza-featured-image-square-2.jpg"      }    }  }\]client.add(messages, user\_id="alice") |
+| :---- |
+
+For example, this is helpful for a nutrition tracking app that can allow users to upload a photo of their meal, enabling the agent to extract details about food choices and preferences directly from the image.
+
+3. Supermemory makes [ingestion of raw context](https://supermemory.ai/docs/add-memories) a primary workflow, including text, files, and URLs, with automatic extraction, and encourages the use of a stable identifier to support updates and deduplication.
+
+| import Supermemory from "supermemory"const client \= new Supermemory()// Add text contentawait client.add({  content: "user: Hi, I am Sarah\\nassistant: Nice to meet you",  customId: "conv\_123",  containerTag: "user\_sarah"})// Add a URL and the memories are auto-extracted by Supermemoryawait client.add({  content: "https://example.com/article",  customId: "doc\_456",  containerTag: "user\_sarah"}) |
+| :---- |
+
+For example, you can keep a running timeline of a customer support chat by repeatedly adding message transcripts to the same customId, allowing the context to grow and be updated without creating redundant memories.
+
+4. Supermemory treats [user profiles](https://supermemory.ai/docs/user-profiles) and unified [search](https://supermemory.ai/docs/search) as first class retrieval outputs, which is useful when you want a compact, always-on context bundle plus query-specific retrieval in the same call path.
+
+| import Supermemory from "supermemory"const client \= new Supermemory()const result \= await client.profile({  containerTag: "user\_123",  q: "deployment errors",  threshold: 0.6})const staticFacts \= result.profile.staticconst dynamicContext \= result.profile.dynamicconst retrieved \= result.searchResults?.results || \[\] |
+| :---- |
+
+For example, if you’re building a workflow assistant that should always know a user’s default delivery address and dietary restrictions, but also answer specific order questions in real time, Supermemory can return both the persistent profile and dynamic search results together.
+
+## Rule of Thumb
+
+The rule of thumb is straightforward. Start with Mem0 when you are building a product agent that primarily needs personalization and continuity with strict scoping primitives, especially when you expect many users, many agents, and strong audit boundaries. Consider Supermemory when your agent memory quickly becomes agent context across many sources, and you want ingestion, extraction, profiles, and hybrid search built in. If you need both, treat user memory and document retrieval as separate planes, even if one vendor can provide both, and then evaluate based on your team's operational constraints and your users' privacy boundaries.
+
+## Benchmarks and evaluation patterns
+
+[LongMemEval](https://arxiv.org/abs/2410.10813) is a public benchmark designed to test long term interactive memory in chat assistants across categories such as preference extraction, knowledge updates and temporal reasoning. Comparing benchmark results reported by [Supermemory research](https://supermemory.ai/research/) and [Mem0 token efficient memory algorithm](https://mem0.ai/blog/mem0-the-token-efficient-memory-algorithm), the table below quotes category level numbers for each. Treat this as directional rather than definitive because the pages may not match exactly on dataset variant, judging setup, or model choice.
+
+| LongMemEval category | Mem0 reported score | Supermemory reported score |
+| :---- | :---- | :---- |
+| Single session user | 97.1% | **97.14%** |
+| Knowledge update | **96.2%** | 88.46% |
+| Temporal reasoning | **93.2%** | 76.69% |
+
+When choosing memory or retrieval tools for your agent, focus less on vendor claims and more on the problems you need to solve. If your agent forgets user preferences between sessions, look for solutions that support long term memory. If it gets lost in long threads or struggles with accurate document answers, test for those scenarios in your evaluation. Quickly validate with small, realistic test conversations that include changing or conflicting facts and document lookups, then see whether the system recalls the right details and can explain its reasoning. This approach gives you evidence for your actual needs rather than just relying on benchmarks or marketing.
+
+## Conclusion
+
+Contextual retrieval fixes retrieval failures. It is the work you do so document chunks are meaningful when retrieved, and it is the work you do so hybrid search and reranking can reliably surface the right evidence. Memory fixes product continuity. It is the work you do so preferences, decisions, and outcomes persist across time and do not collapse into a repeating loop of reminders.
+
+If you take a biased takeaway from this, let it be this. If your agent is an app feature, memory is not optional, and a baseline RAG pipeline is usually the wrong first bet. Retrieval helps when you already have grounded knowledge to fetch, but continuity is what makes the experience feel like a product rather than a demo.
