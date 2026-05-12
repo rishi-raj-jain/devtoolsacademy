@@ -27,6 +27,19 @@ export const allAuthors = [
 
 export const allBlogs = [
   {
+    author: "Rishi Raj Jain",
+    slug: "agent-memory-and-context-for-apps",
+    title: "Agent memory and context for apps",
+    excerpt:
+      "Understanding Context, Retrieval, and Why “Memory” Is Not Just RAG for Agentic Apps",
+    description:
+      "Understanding Context, Retrieval, and Why “Memory” Is Not Just RAG for Agentic Apps",
+    publishedAt: "2026-05-12T00:00:00Z",
+    category: "Memory",
+    isNew: true,
+    isFeatured: false,
+  },
+  {
     author: "Ankur Tyagi",
     slug: "supabase-vs-convex",
     title: "Supabase vs Convex",

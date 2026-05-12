@@ -1,4 +1,5 @@
 import { getMetadata } from "@/lib/metadata"
+import BlogHeader from "@/components/blog/BlogHeader"
 
 export const metadata = getMetadata({
   path: "/blog/agent-memory-and-context-for-apps",
@@ -11,8 +12,6 @@ export const metadata = getMetadata({
   author={"Rishi Raj Jain"}
   publishedAt={"2026-05-12T00:00:00Z"}
 />
-
-# Agent memory and context for apps
 
 Building user-facing agents quickly exposes the challenge of repeated user preferences and agent forgetfulness. Appending more conversation history only increases latency and token usage while still leaving the agent prone to forgetting and contradiction.
 
